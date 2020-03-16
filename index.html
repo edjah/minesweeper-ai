@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Minesweeper</title>
+    <link rel="stylesheet" type="text/css" href="stylesheet.css">
+    <link rel="icon" type="favicon" href="favicon.png">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+    <div id="game-container">
+        <div id="game-header">
+            <div id="num-bombs" class="options-red-text">0</div>
+            <button id="new-game-button">New Game</button>
+            <button id="settings-button">Settings</button>
+            <div id="timer" class="options-red-text">0:00</div>
+        </div>
+        <canvas id="minesweeper-canvas" height="600" width="360" oncontextmenu="return false">
+        </canvas>
+        <div id="settings-modal">
+            <div id="settings-menu">
+                <label id="settings-close">✖</label>
+
+                <label>Size</label>
+                <input id="settings-size" type="range" value="10" min="6" max="20" step="1" />
+                <br />
+
+                <label>Density</label>
+                <input id="settings-density" type="range" value="0.1" min="0" max="1" step="0.01" />
+            </div>
+        </div>
+    </div>
+    <script type="text/javascript" src="minesweeper-ai.js"></script>
+</body>
+</html>
