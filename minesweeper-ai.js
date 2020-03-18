@@ -1,368 +1,228 @@
-let canvas = document.getElementById('minesweeper-canvas');
+window.aiState = null;
 
-function Minesweeper(width=6, height=11, mineDensity=0.15) {
-    this.height = height;
-    this.width = width;
-
-    this.numMines = Math.floor(mineDensity * width * height);
-    this.unflaggedMines = this.numMines;
-    this.runtime = 0;
-
-    this.cells = null;
-    this.gameActive = true;
-    this.finalMine = null;
-
-    // for rendering and event handling
-    this.reComputeSizes = function() {
-        // TODO: make canvas.width and canvas.height dependent on window size
-        this.cellSize = Math.floor(Math.min(
-            (canvas.width - 10) / this.width,
-            (canvas.height - 20) / this.height,
-        ));
-
-        this.paddingY = (canvas.height - this.cellSize * this.height) / 2;
-        this.paddingX = (canvas.width - this.cellSize * this.width) / 2;
+function aiClickCell(game, row, col) {
+    // unflag the cell if the player has mistakenly flagged it
+    if (game.cells && game.cells[row][col].status === 'flag') {
+        game.clickCell(row, col, true);
     }
 
-    this.reComputeSizes();
-    window.onresize = () => this.reComputeSizes;
+    game.clickCell(row, col, false);
 
-    // add an event listener for the canvas
-    canvas.onmouseup = (event) => {
-        window.event = event;
-        let row = Math.floor((event.offsetY - this.paddingY) / this.cellSize);
-        let col = Math.floor((event.offsetX - this.paddingX) / this.cellSize);
-        if (row >= 0 && row < this.height && col >= 0 && col < this.width) {
-            let flagToggle = event.which === 3;
-            this.clickCell(row, col, flagToggle);
+    // draw a circle around on top of the cell that was clicked
+    let y = game.paddingY + (row + 0.5) * game.cellSize;
+    let x = game.paddingX + (col + 0.5) * game.cellSize;
+
+    const ctx = canvas.getContext("2d");
+    ctx.strokeStyle = '#00ff00';
+    ctx.beginPath();
+    ctx.arc(x, y, 3/7 * game.cellSize, 0, 2 * Math.PI);
+    ctx.stroke();
+}
+
+function useAI(game) {
+    const { height, width, numMines, cells } = game;
+
+    // click the top-left cell to start
+    if (cells === null) {
+        aiClickCell(game, 0, 0);
+        return;
+    }
+
+    // remove non-visible information from the game cells. no cheating!!!
+    let cellValues = [];
+    for (let i = 0; i < height; ++i) {
+        let row = [];
+        for (let j = 0; j < width; ++j) {
+            if (cells[i][j].status === 'visible') {
+                row.push(cells[i][j].value);
+            } else {
+                row.push(-1);
+            }
         }
-    };
+        cellValues.push(row);
+    }
 
+    let [row, col] = findOptimalClick(height, width, numMines, cellValues);
+    aiClickCell(game, row, col);
+}
 
-    this.adjacentCoords = function(row, col) {
+function findOptimalClick(height, width, numMines, cells) {
+    // we use this state to cache the positions of known mines
+    if (window.aiState === null) {
+        window.aiState = {
+            knownMines: new Set(),
+        };
+    }
+
+    // counting the number of hidden
+    let numHiddenCells = 0;
+    for (let i = 0; i < height; ++i) {
+        for (let j = 0; j < width; ++j) {
+            numHiddenCells += (cells[i][j] === -1);
+        }
+    }
+
+    // helper function for finding neighbors of a cell
+    function adjacentCoords(row, col, radius) {
         let result = [];
-        for (let i = -1; i <= 1; ++i) {
-            for (let j = -1; j <= 1; ++j) {
-                if ((i !== 0 || j !== 0)  &&
-                    (0 <= row + i && row + i < this.height) &&
-                    (0 <= col + j && col + j < this.width)) {
-                    result.push([row + i, col + j]);
+        for (let dy = -radius; dy <= radius; ++dy) {
+            for (let dx = -radius; dx <= radius; ++dx) {
+                if ((dy !== 0 || dx !== 0)  &&
+                    (0 <= row + dy && row + dy < height) &&
+                    (0 <= col + dx && col + dx < width)) {
+                    result.push([row + dy, col + dx]);
                 }
             }
         }
         return result;
     }
 
-    this.setup = function(first_click) {
-        let [first_click_y, first_click_x] = first_click;
-
-        // creating an empty 2d array.
-        this.cells = [];
-        for (let i = 0; i < this.height; ++i) {
-            let row = [];
-            for (let j = 0; j < this.width; ++j) {
-                row.push({ value: 0, status: 'hidden' });
+    // helper function that generates a list of all k-sized combinations
+    // this function is optimized using the assumption that items.length < 8
+    // from: https://rosettacode.org/wiki/Combinations#Imperative
+    function combinations(items, k) {
+        // count the number of 1 bits in a number
+        function bitcount(n) {
+            let count = 0;
+            while (n > 0) {
+                count += (n & 1);
+                n >>= 1;
             }
-            this.cells.push(row);
+            return count;
         }
 
-        // filling the array with mines
-        for (let n = 0; n < this.numMines; ++n) {
-            while (true) {
-                let row = Math.floor(Math.random() * this.height);
-                let col = Math.floor(Math.random() * this.width);
+        // iterate through all possible subsets
+        // and select the subsets which have k elements
+        let result = [];
+        let numSubsets = 1 << items.length;
 
-                if (row === first_click_y && col === first_click_x) {
-                    continue;
-                }
-
-                if (this.cells[row][col].value === 0) {
-                    this.cells[row][col].value = -1;
-                    break;
-                }
-            }
-        }
-
-        // computing the counts for every cell
-        for (let i = 0; i < this.height; ++i) {
-            for (let j = 0; j < this.width; ++j) {
-                if (this.cells[i][j].value === 0) {
-                    for (let [y, x] of this.adjacentCoords(i, j)) {
-                        this.cells[i][j].value += (this.cells[y][x].value === -1);
+        for (let n = 0; n < numSubsets; ++n) {
+            if (bitcount(n) == k) {
+                let m = n;
+                let combo = [];
+                for (let i = 0; i < items.length; ++i) {
+                    if (m & 1) {
+                        combo.push(items[i]);
                     }
+                    m >>= 1;
                 }
+                result.push(combo);
             }
         }
 
-        // starting the timer
-        this.runtime = 0;
-        this.runtimeInterval = setInterval(() => {
-            this.runtime += 1;
-            this.render();
-        }, 1000);
-
-        // setting the number of unflagged mines
-        this.unflaggedMines = this.numMines;
+        return result;
     }
 
-    this.clickCell = function(row, col, flagToggle) {
-        if (!this.gameActive) {
-            return;
+    function probabilityOfBeingMine(targetRow, targetCol) {
+        // this cell is a known mine, so no need to re-compute
+        if (window.aiState.knownMines.has(targetRow + ':' + targetCol)) {
+            return 1;
         }
 
-        if (this.cells === null) {
-            this.setup([row, col]);
+        // if there are no visible immediate neighbors, we can't get too much
+        // information about this cell, so just guess the prior
+        let immediateNeighbors = adjacentCoords(targetRow, targetCol, 1);
+        immediateNeighbors = immediateNeighbors.filter(x => cells[x[0]][x[1]] >= 0);
+        if (immediateNeighbors.length === 0) {
+            return numMines / numHiddenCells;
         }
 
-        if (flagToggle && this.cells[row][col].status === 'hidden') {
-            this.cells[row][col].status = 'flag';
-            this.unflaggedMines -= 1;
-        } else if (flagToggle && this.cells[row][col].status === 'flag') {
-            this.cells[row][col].status = 'hidden';
-            this.unflaggedMines += 1;
-        } else if (!flagToggle && this.cells[row][col].status === 'hidden') {
-            this.cells[row][col].status = 'visible';
+        // getting a list of all of visible neighbors. we can expand the
+        // neighbor radius to give a more confident estimate at the cost of
+        // a potentially longer search
+        let neighbors = adjacentCoords(targetRow, targetCol, 5);
+        neighbors = neighbors.filter(x => cells[x[0]][x[1]] >= 0);
 
-            if (this.cells[row][col].value === 0) {
-                this.revealConnectedBlanks(row, col);
-            }
-        }
+        // helper function which checks all neighbors and makes sure that we
+        // haven't assigned too many mines
+        function checkNeighbors(minePositions, checkEquality = false) {
+            for (let [r, c] of neighbors) {
+                let adj = adjacentCoords(r, c, 1);
+                let alreadySetMines = 0;
+                for (let [i, j] of adj) {
+                    alreadySetMines += minePositions.has(i + ':' + j);
+                }
 
-
-        if (!flagToggle && this.cells[row][col].value === -1) {
-            this.finalMine = [row, col];
-            setTimeout(() => this.gameLost());
-        }
-
-        this.render();
-
-        // check game victory
-        let allRevealed = true;
-        for (let i = 0; i < this.height; ++i) {
-            for (let j = 0; j < this.width; ++j) {
-                let { value, status } = this.cells[i][j];
-                if (value >= 0 && status !== 'visible') {
-                    allRevealed = false;
+                if ((alreadySetMines > cells[r][c]) ||
+                    (checkEquality && alreadySetMines != cells[r][c])) {
+                    return false;
                 }
             }
+
+            return true;
         }
 
-        if (allRevealed) {
-            setTimeout(() => this.gameWon());
-        }
-    }
+        // counting the number of ways to assign mines such that all of the
+        // neighbors have their constraints satisfied. then count the number
+        // of ways such that the cell at (targetRow, targetCol) has a mine.
+        let totalWays = 0;
+        let numTargetWays = 0;
 
-    this.revealConnectedBlanks = function(row, col) {
-        const dfs = (row, col, seen) => {
-            let key = row + '' + col;
-            if (seen.has(key)) {
+        // perform a dfs through the neighbors and try to make mine assignments
+        // that satisfy all neighbor constraints
+        function dfs(pos, minePositions) {
+            if (pos === neighbors.length) {
+                if (checkNeighbors(minePositions, true)) {
+                    numTargetWays += minePositions.has(targetRow + ':' + targetCol);
+                    totalWays += 1;
+                }
                 return;
             }
 
-            seen.add(key);
+            if (!checkNeighbors(minePositions, false)) {
+                return;
+            }
 
-            for (let [y, x] of this.adjacentCoords(row, col)) {
-                let { value, status } = this.cells[y][x];
+            // for the current cell, if there have not been enough mines
+            // assigned, generate all possible settings of mines to the
+            // unassigned adjacent cells
+            let [r, c] = neighbors[pos];
+            let adj = adjacentCoords(r, c, 1).filter(x => cells[x[0]][x[1]] === -1);
+            let unassigned = adj.filter(x => !minePositions.has(x[0] + ':' + x[1]));
 
-                if (status !== 'flag') {
-                    this.cells[y][x].status = 'visible';
+            let expectedMines = cells[r][c];
+            let remainingMines = expectedMines - (adj.length - unassigned.length);
+
+            for (let combo of combinations(unassigned, remainingMines)) {
+                for (let [i, j] of combo) {
+                    minePositions.add(i + ':' + j);
                 }
 
-                if (value === 0 && status !== 'flag') {
-                    dfs(y, x, seen);
+                dfs(pos + 1, minePositions);
+
+                for (let [i, j] of combo) {
+                    minePositions.delete(i + ':' + j);
                 }
             }
         }
 
-        dfs(row, col, new Set());
+        dfs(0, new Set());
+
+        if (numTargetWays === totalWays) {
+            window.aiState.knownMines.add(targetRow + ':' + targetCol);
+        }
+        return numTargetWays / totalWays;
     }
 
-    this.render = function() {
-        // rendering the number of flags
-        document.getElementById('num-bombs').innerHTML = this.unflaggedMines;
+    // find the unclicked cell with the lowest probability of being a mine
+    let bestCell = null;
+    let bestProb = 1;
 
-        // rendering the timer
-        let [min, sec] = [Math.floor(this.runtime / 60), this.runtime % 60];
-        let timer = min + ':' + (sec < 10 ? '0' + sec : sec);
-        document.getElementById('timer').innerHTML = timer;
-
-        // rendering the grid
-        canvas.width = canvas.width;
-        const ctx = canvas.getContext("2d");
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        ctx.font = Math.floor(this.cellSize / 2) + "px monospace";
-        ctx.strokeStyle = '#000000';
-        ctx.textAlign = 'center';
-
-        const s = this.cellSize;
-
-        // add a red box around the final mine if there is one
-        if (this.finalMine !== null) {
-            let y = this.paddingY + this.finalMine[0] * s;
-            let x = this.paddingX + this.finalMine[1] * s;
-
-            ctx.fillStyle = '#cc0000';
-            ctx.rect(x, y, s, s);
-            ctx.fill();
-        }
-
-        // render the rest of the boxes
-        for (let i = 0; i < this.height; ++i) {
-            for (let j = 0; j < this.width; ++j) {
-                let y = this.paddingY + i * s;
-                let x = this.paddingX + j * s;
-
-                ctx.lineWidth = 1;
-                ctx.rect(x, y, s, s);
-                ctx.stroke();
-
-                if (this.cells !== null) {
-                    if (this.cells[i][j].status === 'flag') {
-                        // render a flag
-                        ctx.beginPath();
-                        ctx.lineWidth = 2;
-                        ctx.fillStyle = "#cc0000";
-
-                        ctx.moveTo(x + 1/3 * s, y + 11/30 * s);
-                        ctx.lineTo(x + 2/3 * s, y + 1/5 * s);
-                        ctx.lineTo(x + 2/3 * s, y + 8/15 * s);
-                        ctx.lineTo(x + 1/3 * s, y + 11/30 * s);
-                        ctx.fill();
-
-                        ctx.moveTo(x + 2/3 * s, y + 8/15 * s);
-                        ctx.lineTo(x + 2/3 * s, y + 11/15 * s);
-                        ctx.lineTo(-5 + x + 2/3 * s, y + 11/15 * s);
-                        ctx.lineTo(5 + x + 2/3 * s, y + 11/15 * s);
-                        ctx.stroke();
-
-                        // draw an X over incorrect flags if game over
-                        if (!this.gameActive && this.cells[i][j].value !== -1) {
-                            ctx.moveTo(x + 1/6 * s, y + 1/6 * s);
-                            ctx.lineTo(x + 5/6 * s, y + 5/6 * s);
-                            ctx.moveTo(x + 5/6 * s, y + 1/6 * s);
-                            ctx.lineTo(x + 1/6 * s, y + 5/6 * s);
-                            ctx.stroke();
-                        }
-
-                    } else if (this.cells[i][j].status === 'visible') {
-                        if (this.cells[i][j].value === -1) {
-                            // render a mine
-                            ctx.beginPath();
-                            ctx.fillStyle = "#000000";
-                            ctx.arc(x + s/2, y + s/2, 1/6*s, 0, 2 * Math.PI);
-                            ctx.fill();
-
-                            // render the mine spikes
-                            for (let phi = 0; phi < 2 * Math.PI; phi += Math.PI / 4) {
-                                let dx = Math.sin(phi) * 1/4*s;
-                                let dy = Math.cos(phi) * 1/4*s;
-                                ctx.moveTo(x + s/2, y + s/2);
-                                ctx.lineTo(x + s/2 + dx, y + s/2 + dy);
-                            }
-                            ctx.stroke();
-
-                        } else {
-                            ctx.beginPath();
-                            ctx.fillStyle = "#EEEEEE";
-                            ctx.rect(x, y, s, s);
-                            ctx.fill();
-
-                            const numberColors = {
-                                0: '#EEEEEE',
-                                1: '#0000FF',
-                                2: '#00FF00',
-                                3: '#0000FF',
-                                4: '#800080',
-                                5: '#800000',
-                                6: '#40E0D0',
-                                7: '#000000',
-                                8: '#808080',
-                            };
-
-                            ctx.fillStyle = numberColors[this.cells[i][j].value];
-                            ctx.fillText(this.cells[i][j].value, x + 1/2*s, y + 3/4*s);
-                        }
-                    }
+    for (let i = 0; i < height; ++i) {
+        for (let j = 0; j < width; ++j) {
+            if (cells[i][j] === -1) {
+                let prob = probabilityOfBeingMine(i, j);
+                if (prob === 0) {
+                    console.log('best prob = 0 | best cell =', [i, j]);
+                    return [i, j];
+                } else if (prob < bestProb) {
+                    bestProb = prob;
+                    bestCell = [i, j];
                 }
             }
         }
     }
 
-    this.gameWon = function() {
-        clearInterval(this.runtimeInterval);
-        this.gameActive = false;
-
-        // flag all mine cells
-        for (let i = 0; i < this.height; ++i) {
-            for (let j = 0; j < this.width; ++j) {
-                if (this.cells[i][j].value === -1) {
-                    this.cells[i][j].status = 'flag';
-                }
-            }
-        }
-
-        this.render();
-        setTimeout(() => alert('You won!'), 100);
-    }
-
-    this.gameLost = function() {
-        clearInterval(this.runtimeInterval);
-        this.gameActive = false;
-
-        // reveal all non-flagged cells
-        for (let i = 0; i < this.height; ++i) {
-            for (let j = 0; j < this.width; ++j) {
-                if (this.cells[i][j].status !== 'flag') {
-                    this.cells[i][j].status = 'visible';
-                }
-            }
-        }
-
-        this.render();
-        setTimeout(() => alert('You lost!'), 100);
-    }
-
-    this.render();
-}
-
-
-// global game state
-let width = 6;
-let height = 12;
-let density = 0.1;
-
-let game = new Minesweeper(width, height, density);
-
-function setupNewGame() {
-    // clear intervals and remove event listeners
-    canvas.parentNode.replaceChild(canvas.cloneNode(true), canvas);
-    canvas = document.getElementById('minesweeper-canvas');
-    clearInterval(game.runtimeInterval);
-
-    // set up a new game
-    game = new Minesweeper(width, height, density);
-}
-
-document.getElementById('new-game-button').onclick = function() {
-    setupNewGame();
-}
-
-document.getElementById('settings-button').onclick = function() {
-    document.getElementById('settings-modal').style.display = 'flex';
-};
-
-document.getElementById('settings-close').onclick = function() {
-    document.getElementById('settings-modal').style.display = 'none';
-};
-
-document.getElementById('settings-size').oninput = function(e) {
-    width = e.target.valueAsNumber;
-    height = width * 2;
-    setupNewGame();
-}
-
-document.getElementById('settings-density').oninput = function(e) {
-    density = e.target.valueAsNumber;
-    setupNewGame();
+    console.log('best prob =', bestProb, '| best cell =', bestCell);
+    return bestCell;
 }
